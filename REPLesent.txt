@@ -1,0 +1,745 @@
+| Building Complex Numeric Classification Systems with Smushables
+
+---
+
+What does it mean for something to be smushable?.
+--
+
+Just take two things and put them together to get a new thing.
+
+--
+If I take two things and smush them together to make a new thing
+I want it to be the same type of thing so I can smush it
+together with another thing.
+--
+
+A really powerful smusher should be smart enough to distribute
+the smushing.
+
+--
+And it would be great if I could smush things incrementally so
+I could take a break and finish up later.
+
+---
+```
+trait Smushable[T] {
+  def merge: (T, T) => T
+}
+```
+--
+```
+
+def smush[T](things: Seq[T], smusher: Smushable[T]): T =
+  things
+  .par
+  .reduce(smusher.merge)
+```
+--
+```
+
+object IntAddition extends Smushable[Int] {
+  val merge =
+    (left: Int, right: Int) =>
+      left + right
+}
+```
+
+--
+```
+val nums = List(1, 2, 3, 4)
+smush(nums, IntAddition)
+```
+---
+```
+object IntSubtraction extends Smushable[Int] {
+  val merge =
+    (left: Int, right: Int) =>
+      left - right
+}
+```
+
+---
+```
+smush(nums, IntSubtraction)
+```
+--
+
+
+| Due to parallel smushing this turns into
+
+| (1 - 2) - (3 - 4)
+
+| (-1) - (-1)
+
+| 0
+
+---
+To make smushables really awesome
+we need to make sure grouping doesn't matter.
+--
+
+Associative: grouping doesn't matter
+
+Smushables need to be associative.
+
+We should be able to take any two items in a sequence
+and smush the left one into the right one,
+even if we are starting in the middle of a sequence.
+
+---
+
+Sometimes the easiest solution is to move the action
+into the value to make it associative.
+
+For example, turn a problem of subtraction into a
+problem of adding negative numbers.
+
+Or separate out debits and credits.
+
+---
+Now let's try incrementally smushing things together
+
+I would like to be able to run these in a distributed manner
+and roll them up across multiple servers.
+
+```
+val nums11 = (1 to 11)
+val noNums: List[Int] = List.empty
+
+--
+//Server 1
+smush(nums11.take(10), IntAddition)
+
+--
+//Server 2
+smush(nums11.drop(10).take(10), IntAddition)
+
+--
+//Server 3
+smush(nums11.drop(20).take(10), IntAddition)
+```
+
+---
+It would be nice if I didn't  need to always have a starting value.
+How could I do this since I need to have at last one thing to return?
+
+This is almost what I want.  I am going to downgrade it to
+KindaSmushable
+
+```
+trait KindaSmushable[T] {
+  def merge: (T, T) => T
+}
+```
+--
+We need the concept of a identity value that is still of the correct type.
+
+Identity: This value doesn't matter
+
+```
+trait Smushable[T] extends KindaSmushable[T] {
+  def identity: T
+}
+```
+
+---
+Now we can clean this up to take 0 or more instead of one or more.
+```
+def smush[T](things: Seq[T], smusher: Smushable[T]): T =
+  (smusher.identity +: things)
+  .par
+  .reduce(smusher.merge)
+```
+
+---
+```
+object IntAddition extends Smushable[Int] {
+  val identity = 0
+
+  val merge =
+    (left: Int, right: Int) =>
+      left + right
+}
+```
+--
+
+```
+//Server 1
+smush(nums11.take(10), IntAddition)
+
+--
+//Server 2
+smush(nums11.drop(10).take(10), IntAddition)
+
+--
+//Server 3
+smush(nums11.drop(20).take(10), IntAddition)
+```
+
+---
+
+
+Examples
+
+Can we make a smusher for integers under multiplication?
+
+--
+```
+object IntMultiplication extends Smushable[Int] {
+  val identity = 1
+
+  val merge =
+    (left: Int, right: Int) =>
+      left * right
+}
+--
+
+smush(nums, IntMultiplication)
+--
+
+smush(List[Int](), IntMultiplication)
+```
+
+---
+What about integers under division?
+--
+It doesn't always return an int and is not associative.
+
+---
+Booleans under AND?
+
+--
+```
+object BoolAnd extends Smushable[Boolean]{
+  val identity = true
+
+  val merge =
+  (left: Boolean, right: Boolean) =>
+    left && right
+}
+--
+
+smush(List(true, true), BoolAnd)
+
+--
+smush(List(true, false), BoolAnd)
+
+--
+smush(List[Boolean](), BoolAnd)
+
+```
+---
+Booleans under OR?
+
+--
+```
+object BoolOr extends Smushable[Boolean] {
+  val identity = false
+
+  val merge =
+  (left: Boolean, right: Boolean) =>
+    left || right
+}
+
+smush(List(false, false, true), BoolOr)
+--
+
+smush(List[Boolean](), BoolOr)
+```
+---
+
+Chars under concat?
+
+--
+Returns lists of characters (Strings)
+
+--
+Solution: put the chars in a collection, make them strings.
+
+If your input is not smushable, try embedding it into
+something you already know is smushable.
+
+Lists are a great choice for this.
+
+```
+object StringConcat extends Smushable[String]{
+  val identity = ""
+
+  val merge =
+    (left: String, right: String) =>
+      left + right
+}
+--
+
+val strings = List("Hello", "World")
+smush(strings, StringConcat)
+```
+---
+```
+object ListConcat extends Smushable[List[Int]]{
+  val identity = Nil
+
+  val merge =
+    (left:List[Int], right:List[Int]) =>
+      left ++ right
+}
+--
+
+val list1 = List(1, 2, 3)
+val list2 = List(3, 4, 5)
+val lists = List(list1, list2)
+--
+
+smush(lists, ListConcat)
+
+```
+---
+```
+def ListConcat[A]: Smushable[List[A]] = new Smushable[List[A]]{
+  val identity = Nil
+
+  val merge =
+    (left:List[A], right:List[A]) =>
+      left ++ right
+}
+--
+
+val intListConcat = ListConcat[Int]
+--
+
+smush(lists, intListConcat)
+
+```
+---
+Lists under intersection?
+
+--
+Theoretically if you had a list of all known values.
+
+Practically only kinda smushable
+
+--
+```
+def kindaSmush[T](things: Seq[T], kindaSmusher: KindaSmushable[T]): T =
+  things
+  .par
+  .reduce(kindaSmusher.merge)
+
+object ListIntersection extends KindaSmushable[List[Int]]{
+  val merge =
+    (left: List[Int], right: List[Int]) =>
+      left intersect right
+}
+--
+
+kindaSmush(lists, ListIntersection)
+```
+
+---
+Integers under Maximum?
+
+--
+```
+object IntMax extends Smushable[Int] {
+
+  val identity = Int.MinValue
+
+  val merge =
+    (left: Int, right: Int) =>
+      if (left > right)
+        left
+      else
+        right
+}
+
+--
+smush(nums, IntMax)
+--
+
+smush(noNums, IntMax)
+```
+---
+And now Integers under Minimum.
+```
+object IntMin extends Smushable[Int] {
+  val identity = Int.MaxValue
+
+  val merge =
+    (left: Int, right: Int) =>
+      if (left < right)
+        left
+      else
+        right
+}
+
+--
+smush(nums, IntMin)
+--
+
+smush(noNums, IntMin)
+
+---
+Smushable things should smush together
+
+We know how to get Integer Minimum and Maximum.
+Can we get both in one pass?
+--
+```
+case class IntMinMax (min: Int, max: Int)
+
+object MinMax extends Smushable[IntMinMax] {
+  val identity = IntMinMax(Int.MaxValue, Int.MinValue)
+
+  val merge = (left: IntMinMax, right: IntMinMax) =>
+    IntMinMax(
+      min = IntMin.merge(left.min, right.min),
+      max = IntMax.merge(left.max, right.max)
+  )
+}
+--
+
+val minMaxs = nums.map(i => IntMinMax(i, i))
+val noMinMaxs = noNums.map(i => IntMinMax(i, i))
+
+--
+smush(minMaxs, MinMax)
+--
+
+smush(noMinMaxs, MinMax)
+```
+
+---
+What do you think about the identity values for MinMax?
+--
+
+If you can't find a good identity just use Option.
+
+There are four cases to handle
+
+Some(left), Some(right) => merge(left, right)
+Some(left), None => Some(left)
+None, Some(right) => Some(right)
+None, None => None
+
+--
+because option is a partial function it can be used with orElse,
+which means you can return left orElse right
+which will give you in priority
+        Some(left)
+        Some(right)
+        None --right
+
+---
+```
+object MaybeMinMax extends Smushable[Option[IntMinMax]] {
+  val identity = None
+
+  val merge = (left: Option[IntMinMax], right: Option[IntMinMax]) =>
+    (left, right) match {
+      case (Some(left), Some(right)) =>
+        Some(IntMinMax(
+            min = IntMin.merge(left.min, right.min),
+            max = IntMax.merge(left.max, right.max)
+          ))
+      case _ => left orElse right
+    }
+}
+--
+
+val minMaxOpts = minMaxs.map(Option(_))
+val noMinMaxOpts = noMinMaxs.map(Option(_))
+--
+
+smush(minMaxOpts, MaybeMinMax)
+--
+
+smush(noMinMaxOpts, MaybeMinMax)
+```
+---
+Nothing to see here, just some boilerplate to prepare for my next slide.
+
+```
+import scala.language.implicitConversions
+import java.time.LocalDate
+import java.time.Period
+val today = LocalDate.now()
+
+//You can find a variation of this in scalaz idops.
+class PipelineContainer[F](value: F) {
+  def |>[G] (f: F => G) = f(value)
+}
+
+implicit def pipelineEnrichment[T](xs: T) =
+  new PipelineContainer(xs)
+
+```
+---
+
+```
+case class Patient(name: String, lastCalibration: LocalDate)
+
+val westCoastPatients = Seq(
+  Patient("Shane", today.minusDays(3)),
+  Patient("Richard", today.minusDays(1)),
+  Patient("Dan", today.minusDays(8))
+)
+
+val eastCoastPatients = Seq(
+  Patient("Peter", today.minusDays(12)),
+  Patient("Justin", today.minusDays(6))
+)
+```
+
+---
+
+How can we smush these?
+
+We probably don't actually want to aggregate the names so
+let's map to a subset we actually care about aggregating,
+say we want to get the average daysSinceCalibration.
+---
+```
+case class PatientStats(count: Int, daysSinceCalibration: Int)
+--
+
+def averageDaysSinceCalibration(ps: PatientStats) =
+  ps.daysSinceCalibration / ps.count
+
+def daysSince(from: LocalDate): Int =
+  Period.between(from, today).getDays
+
+def toPatientStats(patient: Patient) =
+  PatientStats(1, daysSince(patient.lastCalibration))
+```
+---
+```
+object StatsSmusher extends Smushable[PatientStats] {
+  val identity = PatientStats(0, 0)
+  val merge = (left: PatientStats, right: PatientStats) =>
+    PatientStats(
+      left.count + right.count,
+      left.daysSinceCalibration + right.daysSinceCalibration
+    )
+}
+```
+---
+
+```
+val westCoastStats = westCoastPatients.
+  map(toPatientStats).
+  reduce(StatsSmusher.merge)
+
+val eastCoastStats = eastCoastPatients.
+  map(toPatientStats).
+  reduce(StatsSmusher.merge)
+--
+
+```
+Add new items to old collection, recalculate everything.
+
+```
+(westCoastPatients ++ eastCoastPatients).
+  map(toPatientStats).
+  reduce(StatsSmusher.merge) |>
+  averageDaysSinceCalibration
+```
+--
+
+Or just combine the existing aggregations again,
+roll them up further
+
+```
+StatsSmusher.merge(westCoastStats, eastCoastStats) |>
+  averageDaysSinceCalibration
+```
+---
+
+Same result without having to recalc the initial patients
+
+Now instead of aggregating Patients we are aggregating stats.
+
+This is the basis of everything that rolls up,
+analysis cubes, performance metrics, etc.
+
+This is enables parallel and more importantly
+impremental computation.
+
+---
+Now let's implement a complex numerical classification system.
+--
+
+| FizzBuzz!
+--
+
+```
+1 to 110 map { n =>
+  (n % 3, n % 5) match {
+    case (0, 0) => "FizzBuzz"
+    case (0, _) => "Fizz"
+    case (_, 0) => "Buzz"
+    case _ => n
+  }
+}
+```
+---
+A new requirement emerges!
+
+The customer needs FizzBuzzPro (FizzBuzzBazz edition) stat!
+--
+
+```
+1 to 110 map { n =>
+  (n % 3, n % 5, n %7) match {
+    case (0, 0, 0) => "FizzBuzzBazz"
+    case (0, 0, _) => "FizzBuzz"
+    case (0, _, 0) => "FizzBazz"
+    case (_, 0, 0) => "BuzzBazz"
+    case (0, _, _) => "Fizz"
+    case (_, 0, _) => "Buzz"
+    case (_, _, 0) => "Bazz"
+    case _ => n
+  }
+}
+```
+
+---
+Now what do you wish you could smush together?
+--
+
+Now I have to stop being silly and use the real names for things.
+
+Names are important, this will help you find more information in the future.
+
+Also I couldn't bear to take this wonderful example From
+Stew O'Connor and ruin it with my made up names
+---
+
+Smushable = monoidal.
+Most people will just say it is a monoid.
+
+KindaSmushable = semigroup.
+
+merge is any binary operation that
+takes two of a type and returns one of the same type.
+
+Other names it goes by: add, append, op (binary operation)
+
+---
+```
+// here's our definition of a monoid again
+trait Monoid[A] {
+  // an identity element
+  def id: A
+  // an associative operation
+  def op(x: A, y: A): A
+}
+```
+---
+
+```
+implicit val stringMonoid = new Monoid[String] {
+  def id = ""
+  def op(x: String, y: String) = x + y
+}
+```
+---
+
+Here's where things start to get more interesting,
+this says "I can give you a monoid for any Option[A]
+if you can give me a monoid for A"
+
+```
+implicit def optionMonoid[A](implicit am: Monoid[A]): Monoid[Option[A]] =
+  new Monoid[Option[A]] {
+    def id = None
+
+    def op(x: Option[A], y: Option[A]): Option[A] = (x,y) match {
+      case (x, None) => x
+      case (None, y) => y
+      // here we use the A monoid to add two As
+      case (Some(x),Some(y)) => Some(am.op(x,y))
+    }
+  }
+
+```
+---
+
+Given an monoid for B, I can give you a monoid for functions
+returning B, by running the functions on the input and adding the results
+
+```
+  implicit def functionMonoid[A,B](implicit bm: Monoid[B]): Monoid[A => B] =
+    new Monoid[A => B] {
+      def id = A => bm.id
+      def op(x: A => B, y: A => B): A => B = { a =>
+        bm.op(x(a), y(a))
+      }
+  }
+```
+---
+
+We can use a monoid to collapse a bunch of values, here we take a
+list and function that takes us to a value for which we have a
+Monoid, and we can then collapse the list into a single value.
+
+```
+  implicit def fold[A](la: List[A])(implicit am: Monoid[A]): A =
+    la.foldLeft(am.id)(am.op)
+```
+---
+
+```
+
+val fizz: Int => Option[String] =
+  x => if(x % 3 == 0) Some("fizz") else None
+
+val buzz: Int => Option[String] =
+  x => if(x % 5 == 0) Some("buzz") else None
+
+val bazz: Int => Option[String] =
+  x => if(x % 7 == 0) Some("bazz") else None
+
+val funcs = List(fizz,buzz,bazz)
+```
+---
+
+We can combine our functions, this works because we can find an
+option monoid for strings, since we have a monoid for strings,
+then we can find a monoid for Int => Option[String] since we now
+have a monoid for Option[String]
+
+```
+val fizzbuzzbazz = fold(funcs)
+```
+--
+
+Handle the Nones
+```
+val fbbOrInt: Int => String = { i =>
+  (fizzbuzzbazz(i) getOrElse i.toString) + ","
+}
+```
+
+--
+Map our function on a list
+```
+val strings: List[String] =
+  (1 until 110).toList map fbbOrInt
+```
+--
+
+Use fold to collapse our strings using the string monoid
+
+```
+println(fold((strings)))
+```
+---
+
+This talk was influenced heavily by conversations with and
+readings from Scott Wlaschin, Eugene Yokota, Stew O'Connor, and
+Rob Norris.  If you liked this I recommend spending some time
+with their works on the interwebs.
+
+Thanks to Dexcom for sponsoring this meetup.
+
+If you want to follow me I am @ShaneDelmore on Twitter
